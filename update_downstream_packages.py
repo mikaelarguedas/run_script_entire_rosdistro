@@ -12,19 +12,17 @@ import yaml
 from github import Github, GithubException, GithubObject
 from urllib.parse import urlparse
 
+# TODO Error handling: raise on Fatal, skip on minor errors
+# TODO Bail out for non git repos
+# TODO support python2
+# TODO create fork if needed
+# TODO push changes to upstream repo (or fork)
+# TODO open PRs
+# TODO provide options to skip parts of the process
+# TODO add versose mode
 
 def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script):
-    # 1 get all source repo of the distro
-    # 2 clone them
-    # 3 iterate through each of them
-    # 4 run provided script
-    # 5 show diff
-    # 6 commit changes to new branch
-    # 7 check if fork exists, otherwise fork
-    # 8 push changes to fork
-    # 9 open PR
     print(
-        'Roger:\n'
         "1 clone all source repos registered for '%s'\n"
         "2 invoke '%s' in each of them\n"
         '3 show the diff if any\n'
@@ -73,7 +71,6 @@ def get_repos_in_rosinstall_format(root):
 
 
 def commit_changes(repo_dir_list, commit_message, branch_name):
-    # TODO add checks if branch already exist
     for repo_path in repo_dir_list:
         cmd = 'cd %s && git checkout -b %s && git add . && git commit -m "%s"' % (
             repo_path, branch_name, commit_message)
@@ -92,7 +89,8 @@ def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, com
         o = urlparse(value['url'])
         url_paths = o.path.split('/')
         if len(url_paths) < 2:
-            return None, None, None, None
+            print('url parsing failed', file=sys.stderr)
+            return
         base_org = url_paths[1]
         base_repo = url_paths[2][0:url_paths[2].rfind('.')]
         base_branch = value['version']
