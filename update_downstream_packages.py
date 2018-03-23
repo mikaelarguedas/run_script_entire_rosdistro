@@ -12,14 +12,16 @@ import yaml
 from github import Github, GithubException, GithubObject
 from urllib.parse import urlparse
 
+# TODO if package list provided, clone only rdependant repos otherwise clone all
 # TODO Error handling: raise on Fatal, skip on minor errors
-# TODO Bail out for non git repos
+# TODO Bail out for non git repos and repot the list
 # TODO support python2
 # TODO create fork if needed
 # TODO push changes to upstream repo (or fork)
 # TODO open PRs
 # TODO provide options to skip parts of the process
-# TODO add versose mode
+# TODO add verbose mode
+# TODO bail out if branch / PR already exists
 
 def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script):
     print(
@@ -32,7 +34,7 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
         "7 open a PR with the following message '%s'\n" %
         (rosdistro, script, branch_name, pr_message)
     )
-    repos_file_content = list_all_repos(rosdistro)
+    repos_file_content = get_repos_list(rosdistro)
     file_path = save_repos_file(repos_file_content, rosdistro)
     print(file_path)
     source_dir = clone_repositories(file_path)
@@ -42,7 +44,7 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     # diff on the entire workspace
     print_diff(source_dir)
     commit_changes(repo_dir_list, commit_message, branch_name)
-    if False:
+    if True:
         gh = Github(token)
         # check for fork existence and create one if necessary
         create_fork_if_needed(
@@ -107,8 +109,12 @@ def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, com
         base_org = gh_repo_dict[repo]['base_org']
         base_repo = gh_repo_dict[repo]['base_repo']
         base_branch = gh_repo_dict[repo]['base_branch']
-        if [base_org + '/' + base_repo == repo.full_name for repo in ghuser_repos]:
-            print("user '%s' has access to '%s'" % (ghusername, base_org + '/' + base_repo))
+        for user_repo in ghuser_repos:
+            if base_org + '/' + base_repo == user_repo.full_name:
+                print("user '%s' has access to '%s'" % (ghusername, base_org + '/' + base_repo))
+                break
+        else:
+            print("user '%s' does not have access to '%s'\nFork required\n" % (ghusername, base_org + '/' + base_repo))
         # if head_org == base_org:
         #     # repo is on the user organization, no need to fork
         #     head_repo = gh.get_repo(base_org, base_repo)
@@ -135,9 +141,11 @@ def print_diff(directory):
 def run_script_on_repos(directory, script, show_diff=False):
     repo_dir_list = os.listdir(directory)
     modified_repos = []
-    for repo in repo_dir_list:
+    nb_repos = len(repo_dir_list)
+    for idx, repo in enumerate(repo_dir_list):
         repo_path = os.path.join(directory, repo)
         cmd = 'cd %s && %s' % (repo_path, script)
+        print('repo #%d of %d' % (idx + 1, nb_repos))
         print("invoking '%s' in directory '%s'" % (script, repo_path))
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
         diff_res = None
@@ -179,9 +187,9 @@ def save_repos_file(repos_file_content, rosdistro):
     return repos_file_path
 
 
-def list_all_repos(rosdistro):
-    # cmd = 'rosinstall_generator ALL --rosdistro %s --deps --upstream-development' % rosdistro
-    cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
+def get_repos_list(rosdistro):
+    cmd = 'rosinstall_generator robot --rosdistro %s --deps --upstream-development' % rosdistro
+    # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
     result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.stderr:
