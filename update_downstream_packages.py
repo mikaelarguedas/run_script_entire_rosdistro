@@ -4,19 +4,24 @@ from __future__ import print_function
 
 import argparse
 import copy
+import json
 import os
 import subprocess
 import sys
 import uuid
 import yaml
 
-from github import Github, GithubException, GithubObject
+from github import Github, GithubException  # , GithubObject
 
 _py3 = sys.version_info[0] >= 3
 if _py3:
     from urllib.parse import urlparse
+    from urllib.request import urlopen
+    from urllib.error import URLError
 else:
     from urlparse import urlparse
+    from urllib2 import urlopen
+    from urllib2 import URLError
 
 # TODO if package list provided, clone only rdependant repos otherwise clone all
 # TODO Error handling: raise on Fatal, skip on minor errors
@@ -27,6 +32,7 @@ else:
 # TODO provide options to skip parts of the process
 # TODO add verbose mode
 # TODO bail out if branch / PR already exists
+
 
 def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script, package_list):
     print(
@@ -42,19 +48,23 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     repos_file_content = get_repos_list(rosdistro)
     file_path = save_repos_file(repos_file_content, rosdistro)
     print(file_path)
+    print('cloning repositories')
     source_dir = clone_repositories(file_path)
-    package_dir_list = run_script_on_repos(source_dir, script, package_list, show_diff=False)
+    print('running script on packages')
+    modified_pkgs_dict, modified_repos_list = run_script_on_repos(
+        source_dir, script, package_list, show_diff=False)
 
-    print(package_dir_list)
     # diff on the entire workspace
-    print_diff(source_dir)
-    commit_changes(package_dir_list, commit_message, branch_name)
-    # if True:
-    if False:
+    # print_diff(source_dir)
+    print('commiting changes')
+    commit_changes(modified_pkgs_dict, commit_message, branch_name)
+    # if False:
+    if True:
         gh = Github(token)
         # check for fork existence and create one if necessary
+        print('check for repo access or forks')
         create_fork_if_needed(
-            gh, package_dir_list, repos_file_content, pr_message, commit_message, branch_name)
+            gh, modified_repos_list, repos_file_content, pr_message, commit_message, branch_name)
 
 
 def get_repos_in_rosinstall_format(root):
@@ -78,14 +88,12 @@ def get_repos_in_rosinstall_format(root):
     return repos
 
 
-def commit_changes(package_dir_list, commit_message, branch_name):
-    for package_path in package_dir_list:
-        # cmd = 'cd %s && git checkout -b %s && git add . && git commit -m "[%s]%s"' % (
-        #     package_path, branch_name, os.path.basename(package_path), commit_message)
+def commit_changes(packages_dict, commit_message, branch_name):
+    for package_name, package_path in packages_dict.items():
         cmd = 'git rev-parse --abbrev-ref HEAD'
         if _py3:
             result = subprocess.run(
-                cmd, shell=True, cwd=package_path, 
+                cmd, shell=True, cwd=package_path,
                 stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
             )
             output = result.stdout
@@ -93,27 +101,26 @@ def commit_changes(package_dir_list, commit_message, branch_name):
             proc = subprocess.Popen(cmd, shell=True, cwd=package_path, stdout=subprocess.PIPE)
             output, stderr_output = proc.communicate()
         output = output.rstrip('\n')
-        print("'%s'" % output)
+        # print("'%s'" % output)
         cmd = 'git add . && git commit -m "[%s] %s"' % (
-            os.path.basename(package_path), commit_message)
+            package_name, commit_message)
         if output != branch_name:
             cmd = 'git checkout -b %s && ' % branch_name + cmd
-        # cmd = 'git checkout -b %s && git add . && git commit -m "[%s]%s"' % (
-        #     branch_name, os.path.basename(package_path), commit_message)
         print("invoking '%s' in '%s'" % (cmd, package_path))
         if _py3:
             subprocess.run(
-                cmd, shell=True, cwd=package_path, 
+                cmd, shell=True, cwd=package_path,
                 stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
             )
         else:
             subprocess.call(
-                cmd, shell=True, cwd=package_path, 
+                cmd, shell=True, cwd=package_path,
                 stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
             )
 
 
-def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, commit_message, branch_name):
+def create_fork_if_needed(
+        gh, repo_dir_list, repos_file_content, pr_message, commit_message, branch_name):
     root = yaml.load(repos_file_content)
     repo_dict = get_repos_in_rosinstall_format(root)
     gh_repo_dict = {}
@@ -135,39 +142,45 @@ def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, com
     ghusername = ghuser.login
     ghuser_repos = ghuser.get_repos()
     print(head_org)
+    print()
+    print(repo_dir_list)
+    print()
+    forks_to_create = []
+    # build list of modified repos
     for repo_path in repo_dir_list:
+        head_repo = ''
         repo = os.path.basename(repo_path)
-        print(gh_repo_dict[repo])
+        # print(gh_repo_dict[repo])
         base_org = gh_repo_dict[repo]['base_org']
         base_repo = gh_repo_dict[repo]['base_repo']
         base_branch = gh_repo_dict[repo]['base_branch']
-        for user_repo in ghuser_repos:
-            if base_org + '/' + base_repo == user_repo.full_name:
-                print("user '%s' has access to '%s'" % (ghusername, base_org + '/' + base_repo))
-                break
+        repo_full_name = base_org + '/' + base_repo
+        ghuser_repos_full_names = [user_repo.full_name for user_repo in ghuser_repos]
+        if repo_full_name in ghuser_repos_full_names:
+            print("user '%s' has access to '%s'" % (ghusername, repo_full_name))
+            head_repo = gh.get_repo(base_org + '/' + base_repo)
         else:
-            print("user '%s' does not have access to '%s'\nFork required\n" % (ghusername, base_org + '/' + base_repo))
-        # if head_org == base_org:
-        #     # repo is on the user organization, no need to fork
-        #     head_repo = gh.get_repo(base_org, base_repo)
-        # else:
-        #     try:
-        #         repo_forks = gh.list_forks(base_org, base_repo)
-        #         user_forks = [r for r in repo_forks if r.get('owner', {}).get('login', '') == username]
-        #         # github allows only 1 fork per org as far as I know. We just take the first one.
-        #         head_repo = user_forks[0] if user_forks else None
-
-        #     except GithubException as exc:
-        #         pass  # 404 or unauthorized, but unauthorized should have been caught above
+            # print("user '%s' does not have access to '%s'\n"
+            #       "Maybe he has access to a fork?\n" % (ghusername, base_org + '/' + base_repo))
+            try:
+                fork_list = list_forks(base_org, base_repo)
+                # if fork_list:
+                #     print(len(fork_list))
+            except GithubException as exc:
+                print('Exception happened: %s' % exc)
+                pass  # 404 or unauthorized, but unauthorized should have been caught above
+            for fork in fork_list:
+                if fork in ghuser_repos_full_names:
+                    head_repo = fork
+                    print("User has access to a fork! '%s'" % fork)
+                    break
+            else:
+                print("NO FORK FOUND, NEED TO CREATE A FORK OF '%s'\n" % repo_full_name)
+                forks_to_create.append(repo_full_name)
         # print(head_repo)
-        # print(head_org)
-        # print(repo_forks)
-        # print(user_forks)
-        # # check if there's a diff
 
 
 def print_diff(directory):
-    # cmd = 'cd %s && vcs diff -s' % directory
     cmd = 'vcs diff -s'
     if _py3:
         subprocess.run(cmd, cwd=directory, shell=True)
@@ -176,106 +189,77 @@ def print_diff(directory):
 
 
 def run_script_on_repos(directory, script, package_list, show_diff=False):
-    repo_dir_list = os.listdir(directory)
-    modified_repos = []
-    # use rospack to find the packages that depend on the ones in package list 
+    # use rospack to find the packages that depend on the ones in package list
     # set the ros package path
-    old_rpp = os.environ['ROS_PACKAGE_PATH']
+    old_rpp = os.environ['ROS_PACKAGE_PATH']  # noqa
     os.environ['ROS_PACKAGE_PATH'] = directory
     dependent_packages = copy.copy(package_list)
-    print(len(package_list))
+    # print(len(package_list))
     for package in package_list:
-        print(package)
+        # print(package)
         cmd = 'rospack depends-on %s' % package
         print("invoking '%s' with RPP '%s'" % (cmd, os.environ['ROS_PACKAGE_PATH']))
         if _py3:
             subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
-            depends_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            depends_res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
             tmpdepends_list = depends_res.stdout
         else:
-            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             tmpdepends_list, stderr_output = proc.communicate()
         # print('tmpdepends_list: %s' % tmpdepends_list)
         # print(tmpdepends_list.split('\n'))
-        print(len(tmpdepends_list.split('\n')))
+        # print(len(tmpdepends_list.split('\n')))
         for pkg in tmpdepends_list.split('\n'):
             if pkg == '':
                 continue
             # print(pkg)
             dependent_packages.append(pkg)
-    print(dependent_packages)
     nb_dependent_packages = len(dependent_packages)
-    package_locations = []
+    # print(dependent_packages)
+    print(nb_dependent_packages)
+    package_locations = {}
     # now find the location of the selected packages
     #  rospack find <pkg>
     for pkg in dependent_packages:
         cmd = 'rospack find %s' % pkg
         if _py3:
-            depends_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            depends_res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
             package_location = depends_res.stdout
         else:
-            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             package_location, _ = proc.communicate()
-        # print(package_location.rstrip('\n'))
         if not os.path.isdir(package_location.rstrip('\n')):
             print("package_location '%s' is not a directory" % package_location.rstrip('\n'))
         else:
-            package_locations.append(package_location.rstrip('\n'))
-    # print(package_locations)
+            package_locations[pkg] = package_location.rstrip('\n')
 
-    for idx, repo_path in enumerate(package_locations):
-    #     repo_path = os.path.join(directory, repo)
-        # cmd = 'cd %s && %s' % (repo_path, script)
+    modified_pkgs = {}
+    modified_repos = []
+    for idx, pkg in enumerate(package_locations.keys()):
+        pkg_path = package_locations[pkg]
         cmd = script
-        print("repo #%d of %d: '%s'" % (idx + 1, nb_dependent_packages, os.path.basename(repo_path)))
-        # print("invoking '%s' in directory '%s'" % (script, repo_path))
+        print("package #%d of %d: '%s'" % (idx + 1, nb_dependent_packages, pkg))
         diff_res = None
         diff_cmd = 'git diff --shortstat'
         if _py3:
-            subprocess.run(script, shell=True, cwd=repo_path, stdout=subprocess.DEVNULL)
-            diff_res = subprocess.run(diff_cmd, shell=True, cwd=repo_path, stdout=subprocess.PIPE)
+            subprocess.run(script, shell=True, cwd=pkg_path, stdout=subprocess.DEVNULL)
+            diff_res = subprocess.run(diff_cmd, shell=True, cwd=pkg_path, stdout=subprocess.PIPE)
             diff_output = diff_res.stdout
         else:
-            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
-            proc = subprocess.Popen(cmd, shell=True, cwd=repo_path, stdout=subprocess.PIPE)
+            proc = subprocess.Popen(cmd, shell=True, cwd=pkg_path, stdout=subprocess.PIPE)
             proc.communicate()
-            # diff_res = subprocess.call(diff_cmd, shell=True, stdout=subprocess.PIPE)
-            diff_proc = subprocess.Popen(diff_cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
+            diff_proc = subprocess.Popen(diff_cmd, cwd=pkg_path, shell=True, stdout=subprocess.PIPE)
             diff_output, diff_err = diff_proc.communicate()
         if diff_output != b'':
-            print("adding '%s' to the list of modified_repos" % os.path.basename(repo_path))
-            modified_repos.append(repo_path)
+            print("adding '%s' to the list of modified_packages" % pkg)
+            modified_pkgs[pkg] = pkg_path
+            repo_basename = pkg_path.split('/')[4]
+            if repo_basename not in modified_repos:
+                modified_repos.append(repo_basename)
             if show_diff:
-                print_diff(repo_path)
+                print_diff(pkg_path)
 
-
-
-    # for idx, repo in enumerate(repo_dir_list):
-    #     repo_path = os.path.join(directory, repo)
-    #     cmd = 'cd %s && %s' % (repo_path, script)
-    #     print('repo #%d of %d' % (idx + 1, nb_repos))
-    #     print("invoking '%s' in directory '%s'" % (script, repo_path))
-    #     diff_res = None
-    #     diff_cmd = 'cd %s && git diff --shortstat' % repo_path
-    #     if _py3:
-    #         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
-    #         diff_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
-    #         diff_output = diff_res.stdout
-    #     else:
-    #         # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
-    #         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    #         proc.communicate()
-    #         # diff_res = subprocess.call(diff_cmd, shell=True, stdout=subprocess.PIPE)
-    #         diff_proc = subprocess.Popen(diff_cmd, shell=True, stdout=subprocess.PIPE)
-    #         diff_output, diff_err = diff_proc.communicate()
-    #     if diff_output != b'':
-    #         print("adding '%s' to the list of modified_repos" % repo)
-    #         modified_repos.append(repo_path)
-    #         if show_diff:
-    #             print_diff(repo_path)
-    return modified_repos
+    return modified_pkgs, modified_repos
 
 
 def clone_repositories(file_path):
@@ -293,7 +277,7 @@ def clone_repositories(file_path):
             cmd, shell=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, err_output = proc.communicate()
-        
+
     if err_output:
         print('cloning failed', file=sys.stderr)
         print(err_output, file=sys.stderr)
@@ -314,6 +298,7 @@ def save_repos_file(repos_file_content, rosdistro):
 
 
 def get_repos_list(rosdistro):
+    # cmd = 'rosinstall_generator ALL --rosdistro %s --deps --upstream-development' % rosdistro
     cmd = 'rosinstall_generator moveit --rosdistro %s --deps --upstream-development' % rosdistro
     # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
@@ -327,6 +312,40 @@ def get_repos_list(rosdistro):
     if err_output:
         print(err_output)
     return output
+
+
+def json_loads(resp):
+    """Handle parsing json from an HTTP response for both Python 2 and Python 3."""
+    try:
+        charset = resp.headers.getparam('charset')
+        charset = 'utf8' if not charset else charset
+    except AttributeError:
+        charset = resp.headers.get_content_charset()
+
+    return json.loads(resp.read().decode(charset))
+
+
+def list_forks(org, repo):
+    current_page = 1
+    fork_list = []
+    while True:
+        url = 'https://api.github.com/repos/%s/%s/forks?per_page=100&page=%s' % \
+            (org, repo, current_page)
+        try:
+            response = urlopen(url, timeout=6)
+        except URLError as ex:
+            print(ex, file=sys.stderr)
+            return fork_list
+
+        # url = None
+        if response.getcode() in [200, 202]:
+            content = response.read().decode('utf-8')
+            forks = json.loads(content)
+            current_page += 1
+            if not forks:
+                return fork_list
+            for fork in forks:
+                fork_list.append(fork['full_name'])
 
 
 if __name__ == '__main__':
@@ -369,7 +388,8 @@ if __name__ == '__main__':
         '--package-list',
         nargs='+',
         default=['class_loader'],
-        help='The provided script will be ran only on these packages and packages that depend on it',)
+        help='The provided script will be ran only on these packages and '
+             'packages that depend on it',)
     args = argparser.parse_args()
 
     main(
