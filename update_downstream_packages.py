@@ -3,6 +3,7 @@
 from __future__ import print_function
 
 import argparse
+import copy
 import os
 import subprocess
 import sys
@@ -10,12 +11,16 @@ import uuid
 import yaml
 
 from github import Github, GithubException, GithubObject
-from urllib.parse import urlparse
+
+_py3 = sys.version_info[0] == 3
+if _py3:
+    from urllib.parse import urlparse
+else:
+    from urlparse import urlparse
 
 # TODO if package list provided, clone only rdependant repos otherwise clone all
 # TODO Error handling: raise on Fatal, skip on minor errors
 # TODO Bail out for non git repos and repot the list
-# TODO support python2
 # TODO create fork if needed
 # TODO push changes to upstream repo (or fork)
 # TODO open PRs
@@ -23,7 +28,7 @@ from urllib.parse import urlparse
 # TODO add verbose mode
 # TODO bail out if branch / PR already exists
 
-def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script):
+def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script, package_list):
     print(
         "1 clone all source repos registered for '%s'\n"
         "2 invoke '%s' in each of them\n"
@@ -38,7 +43,7 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     file_path = save_repos_file(repos_file_content, rosdistro)
     print(file_path)
     source_dir = clone_repositories(file_path)
-    repo_dir_list = run_script_on_repos(source_dir, script, show_diff=False)
+    repo_dir_list = run_script_on_repos(source_dir, script, package_list, show_diff=False)
 
     print(repo_dir_list)
     # diff on the entire workspace
@@ -73,13 +78,21 @@ def get_repos_in_rosinstall_format(root):
 
 
 def commit_changes(repo_dir_list, commit_message, branch_name):
+    global _py3
     for repo_path in repo_dir_list:
         cmd = 'cd %s && git checkout -b %s && git add . && git commit -m "%s"' % (
             repo_path, branch_name, commit_message)
         print("invoking '%s' in '%s'" % (cmd, repo_path))
-        subprocess.run(
-            cmd, shell=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if _py3:
+            subprocess.run(
+                cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+        else:
+            subprocess.call(
+                cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
 
 
 def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, commit_message, branch_name):
@@ -135,28 +148,110 @@ def create_fork_if_needed(gh, repo_dir_list, repos_file_content, pr_message, com
 
 
 def print_diff(directory):
-    subprocess.run('cd %s && vcs diff -s' % directory, shell=True)
+    cmd = 'cd %s && vcs diff -s' % directory
+    if _py3:
+        subprocess.run(cmd, shell=True)
+    else:
+        subprocess.call(cmd, shell=True)
 
 
-def run_script_on_repos(directory, script, show_diff=False):
+def run_script_on_repos(directory, script, package_list, show_diff=False):
     repo_dir_list = os.listdir(directory)
     modified_repos = []
     nb_repos = len(repo_dir_list)
-    for idx, repo in enumerate(repo_dir_list):
-        repo_path = os.path.join(directory, repo)
+    # use rospack to find the packages that depend on the ones in package list 
+    # set the ros package path
+    old_rpp = os.environ['ROS_PACKAGE_PATH']
+    os.environ['ROS_PACKAGE_PATH'] = directory
+    dependent_packages = copy.copy(package_list)
+    print(len(package_list))
+    for package in package_list:
+        print(package)
+        cmd = 'rospack depends-on %s' % package
+        if _py3:
+            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
+            depends_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            tmpdepends_list = depends_res.stdout
+        else:
+            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            tmpdepends_list, stderr_output = proc.communicate()
+        print(tmpdepends_list.split('\n'))
+        print(len(tmpdepends_list.split('\n')))
+        for pkg in tmpdepends_list.split('\n'):
+            if pkg == '':
+                continue
+            print(pkg)
+            dependent_packages.append(pkg)
+    print(dependent_packages)
+    package_locations = []
+    # now find the location of the selected packages
+    #  rospack find <pkg>
+    for pkg in dependent_packages:
+        cmd = 'rospack find %s' % pkg
+        if _py3:
+            depends_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            package_location = depends_res.stdout
+        else:
+            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            package_location, _ = proc.communicate()
+        print(package_location.rstrip('\n'))
+        if not os.path.isdir(package_location.rstrip('\n')):
+            print("package_location '%s' is not a directory" % package_location.rstrip('\n'))
+        else:
+            package_locations.append(package_location.rstrip('\n'))
+    print(package_locations)
+
+    for idx, repo_path in enumerate(package_locations):
+    #     repo_path = os.path.join(directory, repo)
         cmd = 'cd %s && %s' % (repo_path, script)
         print('repo #%d of %d' % (idx + 1, nb_repos))
         print("invoking '%s' in directory '%s'" % (script, repo_path))
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
         diff_res = None
-        diff_res = subprocess.run(
-            'cd %s && git diff --shortstat' % repo_path,
-            shell=True, stdout=subprocess.PIPE)
-        if diff_res.stdout != b'':
-            print("adding '%s' to the list of modified_repos" % repo)
+        diff_cmd = 'cd %s && git diff --shortstat' % repo_path
+        if _py3:
+            subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
+            diff_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            diff_output = diff_res.stdout
+        else:
+            # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            proc.communicate()
+            # diff_res = subprocess.call(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            diff_proc = subprocess.Popen(diff_cmd, shell=True, stdout=subprocess.PIPE)
+            diff_output, diff_err = diff_proc.communicate()
+        if diff_output != b'':
+            print("adding '%s' to the list of modified_repos" % os.path.basename(repo_path))
             modified_repos.append(repo_path)
             if show_diff:
                 print_diff(repo_path)
+
+
+
+    # for idx, repo in enumerate(repo_dir_list):
+    #     repo_path = os.path.join(directory, repo)
+    #     cmd = 'cd %s && %s' % (repo_path, script)
+    #     print('repo #%d of %d' % (idx + 1, nb_repos))
+    #     print("invoking '%s' in directory '%s'" % (script, repo_path))
+    #     diff_res = None
+    #     diff_cmd = 'cd %s && git diff --shortstat' % repo_path
+    #     if _py3:
+    #         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
+    #         diff_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
+    #         diff_output = diff_res.stdout
+    #     else:
+    #         # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
+    #         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    #         proc.communicate()
+    #         # diff_res = subprocess.call(diff_cmd, shell=True, stdout=subprocess.PIPE)
+    #         diff_proc = subprocess.Popen(diff_cmd, shell=True, stdout=subprocess.PIPE)
+    #         diff_output, diff_err = diff_proc.communicate()
+    #     if diff_output != b'':
+    #         print("adding '%s' to the list of modified_repos" % repo)
+    #         modified_repos.append(repo_path)
+    #         if show_diff:
+    #             print_diff(repo_path)
     return modified_repos
 
 
@@ -165,12 +260,20 @@ def clone_repositories(file_path):
     src_dir = os.path.join(repo_dir, 'src')
     os.makedirs(src_dir)
     cmd = 'vcs import %s --input %s' % (src_dir, file_path)
-    rc = subprocess.run(
-        cmd, shell=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    if rc.stderr:
+    if _py3:
+        rc = subprocess.run(
+            cmd, shell=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        err_output = rc.stderr
+    else:
+        proc = subprocess.Popen(
+            cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output, err_output = proc.communicate()
+        
+    if err_output:
         print('cloning failed', file=sys.stderr)
-        print(rc.stderr, file=sys.stderr)
+        print(err_output, file=sys.stderr)
     return src_dir
 
 
@@ -188,13 +291,19 @@ def save_repos_file(repos_file_content, rosdistro):
 
 
 def get_repos_list(rosdistro):
-    cmd = 'rosinstall_generator robot --rosdistro %s --deps --upstream-development' % rosdistro
+    cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
-    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.stderr:
-        print(result.stderr)
-    return result.stdout
+    if _py3:
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output = result.stdout
+        err_output = result.stderr
+    else:
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output, err_output = proc.communicate()
+    if err_output:
+        print(err_output)
+    return output
 
 
 if __name__ == '__main__':
@@ -233,6 +342,10 @@ if __name__ == '__main__':
         action='store_true',
         default=False,
         help='actually modify upstream repo, we encourage to do a dry-run before using this flag',)
+    argparser.add_argument(
+        '--package-list',
+        default=['class_loader'],
+        help='The provided script will be ran only on these packages and packages that depend on it',)
     args = argparser.parse_args()
 
     main(
@@ -243,4 +356,5 @@ if __name__ == '__main__':
         commit_message=args.commit_message,
         branch_name=args.branch_name,
         script=args.script,
+        package_list=args.package_list,
     )
