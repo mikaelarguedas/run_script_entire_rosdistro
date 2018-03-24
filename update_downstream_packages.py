@@ -158,7 +158,6 @@ def print_diff(directory):
 def run_script_on_repos(directory, script, package_list, show_diff=False):
     repo_dir_list = os.listdir(directory)
     modified_repos = []
-    nb_repos = len(repo_dir_list)
     # use rospack to find the packages that depend on the ones in package list 
     # set the ros package path
     old_rpp = os.environ['ROS_PACKAGE_PATH']
@@ -168,6 +167,7 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
     for package in package_list:
         print(package)
         cmd = 'rospack depends-on %s' % package
+        print("invoking '%s' with RPP '%s'" % (cmd, os.environ['ROS_PACKAGE_PATH']))
         if _py3:
             subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
             depends_res = subprocess.run(diff_cmd, shell=True, stdout=subprocess.PIPE)
@@ -176,6 +176,7 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
             # subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL)
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             tmpdepends_list, stderr_output = proc.communicate()
+        print('tmpdepends_list: %s' % tmpdepends_list)
         print(tmpdepends_list.split('\n'))
         print(len(tmpdepends_list.split('\n')))
         for pkg in tmpdepends_list.split('\n'):
@@ -184,6 +185,7 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
             print(pkg)
             dependent_packages.append(pkg)
     print(dependent_packages)
+    nb_dependent_packages = len(dependent_packages)
     package_locations = []
     # now find the location of the selected packages
     #  rospack find <pkg>
@@ -206,7 +208,7 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
     for idx, repo_path in enumerate(package_locations):
     #     repo_path = os.path.join(directory, repo)
         cmd = 'cd %s && %s' % (repo_path, script)
-        print('repo #%d of %d' % (idx + 1, nb_repos))
+        print('repo #%d of %d' % (idx + 1, nb_dependent_packages))
         print("invoking '%s' in directory '%s'" % (script, repo_path))
         diff_res = None
         diff_cmd = 'cd %s && git diff --shortstat' % repo_path
@@ -344,6 +346,7 @@ if __name__ == '__main__':
         help='actually modify upstream repo, we encourage to do a dry-run before using this flag',)
     argparser.add_argument(
         '--package-list',
+        nargs='+',
         default=['class_loader'],
         help='The provided script will be ran only on these packages and packages that depend on it',)
     args = argparser.parse_args()
