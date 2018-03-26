@@ -11,7 +11,7 @@ import sys
 import uuid
 import yaml
 
-from github import Github, GithubException  # , GithubObject
+from github import Github, GithubException, UnknownObjectException  # , GithubObject
 
 _py3 = sys.version_info[0] >= 3
 if _py3:
@@ -26,6 +26,7 @@ else:
 # TODO if package list provided, clone only rdependant repos otherwise clone all
 # TODO Error handling: raise on Fatal, skip on minor errors
 # TODO Bail out for non git repos and repot the list
+# TODO Bail out of non github repos
 # TODO create fork if needed
 # TODO push changes to upstream repo (or fork)
 # TODO open PRs
@@ -63,9 +64,11 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
         gh = Github(token)
         # check for fork existence and create one if necessary
         print('check for repo access or forks')
-        create_fork_if_needed(
+        forks_to_create, repos_to_push = check_if_fork_needed(
             gh, modified_repos_list, repos_file_content, pr_message, commit_message, branch_name)
-
+        print(forks_to_create)
+        print(repos_to_push)
+        create_forks(gh, forks_to_create)
 
 def get_repos_in_rosinstall_format(root):
     repos = {}
@@ -119,7 +122,7 @@ def commit_changes(packages_dict, commit_message, branch_name):
             )
 
 
-def create_fork_if_needed(
+def check_if_fork_needed(
         gh, repo_dir_list, repos_file_content, pr_message, commit_message, branch_name):
     root = yaml.load(repos_file_content)
     repo_dict = get_repos_in_rosinstall_format(root)
@@ -146,6 +149,8 @@ def create_fork_if_needed(
     print(repo_dir_list)
     print()
     forks_to_create = []
+    repositories_to_push_without_forking = []
+    skipped_repos = []
     # build list of modified repos
     for repo_path in repo_dir_list:
         head_repo = ''
@@ -158,26 +163,68 @@ def create_fork_if_needed(
         ghuser_repos_full_names = [user_repo.full_name for user_repo in ghuser_repos]
         if repo_full_name in ghuser_repos_full_names:
             print("user '%s' has access to '%s'" % (ghusername, repo_full_name))
-            head_repo = gh.get_repo(base_org + '/' + base_repo)
+            head_repo = gh.get_repo(repo_full_name)
+            repositories_to_push_without_forking.append(repo_full_name)
         else:
             # print("user '%s' does not have access to '%s'\n"
             #       "Maybe he has access to a fork?\n" % (ghusername, base_org + '/' + base_repo))
+            base_repo_object = gh.get_repo(repo_full_name)
             try:
-                fork_list = list_forks(base_org, base_repo)
-                # if fork_list:
-                #     print(len(fork_list))
-            except GithubException as exc:
-                print('Exception happened: %s' % exc)
-                pass  # 404 or unauthorized, but unauthorized should have been caught above
+                base_repo_object.full_name
+            except UnknownObjectException as e:
+                print("'%s' is not a github repository, skipping...\n" % repo_full_name)
+                skipped_repos.append(repo_full_name)
+                continue
+            fork_list = base_repo_object.get_forks()
+            # try:
+            #     fork_list = list_forks(base_org, base_repo)
+            #     # if fork_list:
+            #     #     print(len(fork_list))
+            # except GithubException as exc:
+            #     print('Exception happened: %s' % exc)
+            #     pass  # 404 or unauthorized, but unauthorized should have been caught above
             for fork in fork_list:
-                if fork in ghuser_repos_full_names:
+                if fork.full_name in ghuser_repos_full_names:
                     head_repo = fork
-                    print("User has access to a fork! '%s'" % fork)
+                    print("User has access to a fork! '%s'" % fork.full_name)
+                    repositories_to_push_without_forking.append(fork.full_name)
                     break
             else:
                 print("NO FORK FOUND, NEED TO CREATE A FORK OF '%s'\n" % repo_full_name)
                 forks_to_create.append(repo_full_name)
         # print(head_repo)
+    print('repositories to push to: %s\n' % repositories_to_push_without_forking)
+    print('forks to create: %s\n' % forks_to_create)
+    print('skipped repositories: %s\n' % skipped_repos)
+    return forks_to_create, repositories_to_push_without_forking
+
+
+def create_forks(gh, forks_to_create):
+    for fork in forks_to_create:
+        cmd = "gh.create_fork('%s')" % fork
+        print("creating fork calling: '%s'" % cmd)
+
+    # returns the list of forked Github.Repository
+    # TODO complete this
+    return []
+
+
+def add_new_remotes(gh, forks_to_create):
+    for fork in forks_to_create:
+        cmd = "git remote add %s %s" % (remote_name, remote_url)
+        print("creating fork calling: '%s' in '%s'" % cmd)
+
+
+# def push_changes(gh, forks_to_create):
+#     for fork in forks_to_create:
+#         cmd = "gh.create_fork('%s')" % fork
+#         print("creating fork calling: '%s'" % cmd)
+
+
+# def open_pull_requests(gh, forks_to_create):
+#     for fork in forks_to_create:
+#         cmd = "gh.create_fork('%s')" % fork
+#         print("creating fork calling: '%s'" % cmd)
 
 
 def print_diff(directory):
