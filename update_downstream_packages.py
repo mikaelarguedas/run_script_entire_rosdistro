@@ -46,8 +46,9 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
         "7 open a PR with the following message '%s'\n" %
         (rosdistro, script, branch_name, pr_message)
     )
+    ws_dir = os.path.join(os.sep, 'tmp', 'tmp' + rosdistro + uuid.uuid4().hex[:6].upper())
     repos_file_content = get_repos_list(rosdistro)
-    file_path = save_repos_file(repos_file_content, rosdistro)
+    file_path = save_repos_file(repos_file_content, ws_dir, rosdistro)
     print(file_path)
     print('cloning repositories')
     source_dir = clone_repositories(file_path)
@@ -64,11 +65,18 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
         gh = Github(token)
         # check for fork existence and create one if necessary
         print('check for repo access or forks')
-        forks_to_create, repos_to_push = check_if_fork_needed(
+        forks_to_create, repos_to_push_as_is = check_if_fork_needed(
             gh, modified_repos_list, repos_file_content, pr_message, commit_message, branch_name)
         print(forks_to_create)
+        print(repos_to_push_as_is)
+        forked_repositories = create_forks(gh, forks_to_create)
+        print(forked_repositories)
+        add_new_remotes(forked_repositories, ws_dir)
+        repos_to_push = copy.copy(repos_to_push_as_is)
+        repos_to_push += [forked_repo for forked_repo in forked_repositories.keys()]
+        print('repositories to push after forking:')
         print(repos_to_push)
-        create_forks(gh, forks_to_create)
+
 
 def get_repos_in_rosinstall_format(root):
     repos = {}
@@ -200,25 +208,38 @@ def check_if_fork_needed(
 
 
 def create_forks(gh, forks_to_create):
+    ghuser = gh.get_user()
+    forked_repositories = {}
+    for fork in forks_to_create:
+        repo_to_fork = gh.get_repo(fork)
+        cmd = "ghuser.create_fork('%s')" % repo_to_fork
+        print("creating fork of: '%s'" % fork)
+        # forked_repo = ghuser.create_fork(repo_to_fork)
+        # forked_repositories.append(forked_repo)
+        # forked_repositories.append(repo_to_fork)
+        # forked_repositories[forked_repo.name] = forked_repo.ssh_url
+        # TODO use forked repo when done testing
+        forked_repositories[repo_to_fork.name] = repo_to_fork.ssh_url
+    # returns the list of forked Github.Repository
+    return forked_repositories
+
+
+def add_new_remotes(forked_repositories, ws_dir):
+
+    # repo_path_as_list = package_path.split(os.sep)
+    # repo_path = os.sep.join(repo_path_as_list[:5])
+    # 
+    # if repo_path not in repositories_modified
+    remote_name = os.path.basename(ws_dir)
+    for repo_basename in forked_repositories.keys():
+        cmd = "git remote add %s %s" % (remote_name, forked_repositories[repo_basename])
+        print("adding new remote for forks: '%s' in '%s'" % (cmd, os.path.join(ws_dir, repo_basename)))
+
+
+def push_changes(gh, branch_name, repos_to_push):
     for fork in forks_to_create:
         cmd = "gh.create_fork('%s')" % fork
         print("creating fork calling: '%s'" % cmd)
-
-    # returns the list of forked Github.Repository
-    # TODO complete this
-    return []
-
-
-def add_new_remotes(gh, forks_to_create):
-    for fork in forks_to_create:
-        cmd = "git remote add %s %s" % (remote_name, remote_url)
-        print("creating fork calling: '%s' in '%s'" % cmd)
-
-
-# def push_changes(gh, forks_to_create):
-#     for fork in forks_to_create:
-#         cmd = "gh.create_fork('%s')" % fork
-#         print("creating fork calling: '%s'" % cmd)
 
 
 # def open_pull_requests(gh, forks_to_create):
@@ -285,7 +306,7 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
     for idx, pkg in enumerate(package_locations.keys()):
         pkg_path = package_locations[pkg]
         cmd = script
-        print("package #%d of %d: '%s'" % (idx + 1, nb_dependent_packages, pkg))
+        print("package #%3d of %d: '%s'" % (idx + 1, nb_dependent_packages, pkg))
         diff_res = None
         diff_cmd = 'git diff --shortstat'
         if _py3:
@@ -331,14 +352,13 @@ def clone_repositories(file_path):
     return src_dir
 
 
-def save_repos_file(repos_file_content, rosdistro):
-    tmpdir = os.path.join('/', 'tmp', 'tmp' + rosdistro + uuid.uuid4().hex[:6].upper())
-    print(tmpdir)
+def save_repos_file(repos_file_content, ws_dir, rosdistro):
+    print(ws_dir)
 
-    if os.path.isdir(tmpdir):
-        os.removedirs(tmpdir)
-    os.makedirs(tmpdir)
-    repos_file_path = os.path.join(tmpdir, rosdistro + '_all.repos')
+    if os.path.isdir(ws_dir):
+        os.removedirs(ws_dir)
+    os.makedirs(ws_dir)
+    repos_file_path = os.path.join(ws_dir, rosdistro + '_all.repos')
     with open(repos_file_path, 'wb') as f:
         f.write(repos_file_content)
     return repos_file_path
