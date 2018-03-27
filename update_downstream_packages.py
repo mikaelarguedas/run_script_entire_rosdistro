@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import argparse
 import copy
-import json
 import os
 import subprocess
 import sys
@@ -236,10 +235,10 @@ def add_new_remotes(forked_repositories, ws_dir):
         print("adding new remote for forks: '%s' in '%s'" % (cmd, os.path.join(ws_dir, repo_basename)))
 
 
-def push_changes(gh, branch_name, repos_to_push):
-    for fork in forks_to_create:
-        cmd = "gh.create_fork('%s')" % fork
-        print("creating fork calling: '%s'" % cmd)
+# def push_changes(gh, branch_name, repos_to_push):
+#     for fork in forks_to_create:
+#         cmd = "gh.create_fork('%s')" % fork
+#         print("creating fork calling: '%s'" % cmd)
 
 
 # def open_pull_requests(gh, forks_to_create):
@@ -381,53 +380,19 @@ def get_repos_list(rosdistro):
     return output
 
 
-def json_loads(resp):
-    """Handle parsing json from an HTTP response for both Python 2 and Python 3."""
-    try:
-        charset = resp.headers.getparam('charset')
-        charset = 'utf8' if not charset else charset
-    except AttributeError:
-        charset = resp.headers.get_content_charset()
-
-    return json.loads(resp.read().decode(charset))
-
-
-def list_forks(org, repo):
-    current_page = 1
-    fork_list = []
-    while True:
-        url = 'https://api.github.com/repos/%s/%s/forks?per_page=100&page=%s' % \
-            (org, repo, current_page)
-        try:
-            response = urlopen(url, timeout=6)
-        except URLError as ex:
-            print(ex, file=sys.stderr)
-            return fork_list
-
-        # url = None
-        if response.getcode() in [200, 202]:
-            content = response.read().decode('utf-8')
-            forks = json.loads(content)
-            current_page += 1
-            if not forks:
-                return fork_list
-            for fork in forks:
-                fork_list.append(fork['full_name'])
-
-
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
     argparser.add_argument(
         '--token',
         help='Github token',)
     argparser.add_argument(
-        '--rosdistro',
+        '-r', '--rosdistro',
         type=str,
         required=True,
         choices=['indigo', 'kinetic', 'lunar'],
         help='ROS distribution to update',)
     argparser.add_argument(
-        '--branch-name',
+        '-b', '--branch-name',
         type=str,
         required=True,
         help='name of the branch to create and push the changes to',)
