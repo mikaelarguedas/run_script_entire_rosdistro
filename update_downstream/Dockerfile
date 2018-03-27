@@ -36,7 +36,8 @@ RUN apt-get -qq update && \
 WORKDIR /root/
 
 RUN wget https://raw.githubusercontent.com/ros/class_loader/indigo-devel/scripts/class_loader_headers_update.py
-RUN git clone https://gist.github.com/40351ae2c3640389856af53b8b4ccf6b.git
+RUN wget https://raw.githubusercontent.com/ros/pluginlib/kinetic-devel/scripts/pluginlib_headers_migration.py
+RUN wget https://raw.githubusercontent.com/mikaelarguedas/run_script_entire_rosdistro/master/update_downstream_packages.py
 RUN rosdep init && rosdep update
 
 # setup entrypoint
