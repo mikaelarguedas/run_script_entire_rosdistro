@@ -10,10 +10,10 @@ import sys
 import uuid
 import yaml
 
-from github import Github, GithubException, UnknownObjectException  # , GithubObject
+from github import Github, GithubException, UnknownObjectException
 
-_py3 = sys.version_info[0] >= 3
-if _py3:
+_PY3 = sys.version_info[0] >= 3
+if _PY3:
     from urllib.parse import urlparse
     from urllib.request import urlopen
     from urllib.error import URLError
@@ -32,6 +32,21 @@ else:
 # TODO provide options to skip parts of the process
 # TODO add verbose mode
 # TODO bail out if branch / PR already exists
+
+
+def run_command(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, cwd=None):
+    if _PY3:
+        result = subprocess.run(
+            cmd, shell=shell, cwd=cwd,
+            stdout=stdout, stderr=stderr
+        )
+        return result.stdout, result.stderr
+    else:
+        proc = subprocess.Popen(
+            cmd, shell=shell, cwd=cwd, stdout=stdout, stderr=stderr, universal_newline=True)
+        std_out, error_out = proc.communicate()
+        return std_out, error_out
+
 
 
 def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script, package_list):
@@ -75,7 +90,6 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     print('newly_forked_repositories')
     print(newly_forked_repositories)
     forked_repositories = dict(newly_forked_repositories, **existing_forks)
-    # forked_repositories += [existing_forks[existing_fork] for existing_fork in existing_forks.keys()]
     print('dict of all forks')
     print(forked_repositories)
     remote_name = add_new_remotes(forked_repositories, source_dir)
@@ -112,32 +126,16 @@ def get_repos_in_rosinstall_format(root):
 
 def commit_changes(packages_dict, commit_message, branch_name):
     for package_name, package_path in packages_dict.items():
-        cmd = 'git rev-parse --abbrev-ref HEAD'
-        if _py3:
-            result = subprocess.run(
-                cmd, shell=True, cwd=package_path,
-                stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
-            )
-            output = result.stdout
-        else:
-            proc = subprocess.Popen(cmd, shell=True, cwd=package_path, stdout=subprocess.PIPE)
-            output, stderr_output = proc.communicate()
+        branch_cmd = 'git rev-parse --abbrev-ref HEAD'
+        output, error_out = run_command(branch_cmd, cwd=package_path)
         output = output.rstrip('\n')
-        cmd = 'git add . && git commit -m "[%s] %s"' % (
-            package_name, commit_message)
+        commit_cmd = ''
         if output != branch_name:
-            cmd = 'git checkout -b %s && ' % branch_name + cmd
-        print("invoking '%s' in '%s'" % (cmd, package_path))
-        if _py3:
-            subprocess.run(
-                cmd, shell=True, cwd=package_path,
-                stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
-            )
-        else:
-            subprocess.call(
-                cmd, shell=True, cwd=package_path,
-                stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
-            )
+            commit_cmd = 'git checkout -b %s && ' % branch_name
+        commit_cmd += 'git add . && git commit -m "[%s] %s"' % (
+            package_name, commit_message)
+        print("invoking '%s' in '%s'" % (commit_cmd, package_path))
+        run_command(commit_cmd, cwd=package_path)
 
 
 def check_if_fork_needed(
@@ -229,15 +227,7 @@ def add_new_remotes(forked_repositories, source_dir):
         print(
             "adding new remote for forks: '%s' in '%s'" % (
                 cmd, repo_path))
-        if _py3:
-            subprocess.run(
-                cmd, shell=True, cwd=repo_path,
-                stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            output, stderr_output = proc.communicate()
+        output, error_out = run_command(cmd, cwd=repo_path)
     return remote_name
 
 
@@ -251,11 +241,7 @@ def push_changes(branch_name, repos_to_push, forked_repos_to_push, remote_name, 
             cmd, repo_path))
         if commit:
             print('Here we will actually push')
-            if _py3:
-                subprocess.run(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
-            else:
-                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-                output, stderr_output = proc.communicate()
+            output, error_out = run_command(cmd, cwd=repo_path)
     print(forked_repos_to_push)
     for repo_basename, repo in forked_repos_to_push.items():
         repo_path = os.path.join(source_dir, repo_basename)
@@ -264,11 +250,7 @@ def push_changes(branch_name, repos_to_push, forked_repos_to_push, remote_name, 
             cmd, repo_path))
         if commit:
             print('Here we will actually push')
-            if _py3:
-                subprocess.run(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
-            else:
-                proc = subprocess.Popen(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
-                output, stderr_output = proc.communicate()
+            output, error_out = run_command(cmd, cwd=repo_path)
 
 
 def open_pull_requests(gh, rosinstall_repos_dict, repos_to_open_prs_from, branch_name, commit):
@@ -291,10 +273,8 @@ def open_pull_requests(gh, rosinstall_repos_dict, repos_to_open_prs_from, branch
 
 def print_diff(directory):
     cmd = 'vcs diff -s'
-    if _py3:
-        subprocess.run(cmd, cwd=directory, shell=True)
-    else:
-        subprocess.call(cmd, cwd=directory, shell=True)
+
+    run_command(cmd, cwd=directory, stdout=None, stderr=None)
 
 
 def run_script_on_repos(directory, script, package_list, show_diff=False):
@@ -308,35 +288,21 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
         # print(package)
         cmd = 'rospack depends-on %s' % package
         print("invoking '%s' with RPP '%s'" % (cmd, os.environ['ROS_PACKAGE_PATH']))
-        if _py3:
-            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
-            depends_res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
-            tmpdepends_list = depends_res.stdout
-        else:
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-            tmpdepends_list, stderr_output = proc.communicate()
-        # print('tmpdepends_list: %s' % tmpdepends_list)
-        # print(tmpdepends_list.split('\n'))
-        # print(len(tmpdepends_list.split('\n')))
-        for pkg in tmpdepends_list.split('\n'):
+
+        output, error_out = run_command(cmd)
+        for pkg in output.split('\n'):
             if pkg == '':
                 continue
-            # print(pkg)
             dependent_packages.append(pkg)
     nb_dependent_packages = len(dependent_packages)
-    # print(dependent_packages)
     print(nb_dependent_packages)
     package_locations = {}
     # now find the location of the selected packages
     #  rospack find <pkg>
     for pkg in dependent_packages:
         cmd = 'rospack find %s' % pkg
-        if _py3:
-            depends_res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
-            package_location = depends_res.stdout
-        else:
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-            package_location, _ = proc.communicate()
+
+        package_location, error_out = run_command(cmd)
         if not os.path.isdir(package_location.rstrip('\n')):
             print("package_location '%s' is not a directory" % package_location.rstrip('\n'))
         else:
@@ -348,17 +314,10 @@ def run_script_on_repos(directory, script, package_list, show_diff=False):
         pkg_path = package_locations[pkg]
         cmd = script
         print("package #%3d of %d: '%s'" % (idx + 1, nb_dependent_packages, pkg))
-        diff_res = None
+        # diff_res = None
         diff_cmd = 'git diff --shortstat'
-        if _py3:
-            subprocess.run(script, shell=True, cwd=pkg_path, stdout=subprocess.DEVNULL)
-            diff_res = subprocess.run(diff_cmd, shell=True, cwd=pkg_path, stdout=subprocess.PIPE)
-            diff_output = diff_res.stdout
-        else:
-            proc = subprocess.Popen(cmd, shell=True, cwd=pkg_path, stdout=subprocess.PIPE)
-            proc.communicate()
-            diff_proc = subprocess.Popen(diff_cmd, cwd=pkg_path, shell=True, stdout=subprocess.PIPE)
-            diff_output, diff_err = diff_proc.communicate()
+        _, _ = run_command(cmd, cwd=pkg_path)
+        diff_output, diff_err = run_command(diff_cmd, cwd=pkg_path)
         if diff_output != b'':
             print("adding '%s' to the list of modified_packages" % pkg)
             modified_pkgs[pkg] = pkg_path
@@ -376,16 +335,8 @@ def clone_repositories(file_path):
     src_dir = os.path.join(repo_dir, 'src')
     os.makedirs(src_dir)
     cmd = 'vcs import %s --input %s' % (src_dir, file_path)
-    if _py3:
-        rc = subprocess.run(
-            cmd, shell=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        err_output = rc.stderr
-    else:
-        proc = subprocess.Popen(
-            cmd, shell=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, err_output = proc.communicate()
+
+    output, err_output = run_command(cmd)
 
     if err_output:
         print('cloning failed', file=sys.stderr)
@@ -410,13 +361,7 @@ def get_repos_list(rosdistro):
     cmd = 'rosinstall_generator moveit --rosdistro %s --deps --upstream-development' % rosdistro
     # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
-    if _py3:
-        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output = result.stdout
-        err_output = result.stderr
-    else:
-        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, err_output = proc.communicate()
+    output, err_output = run_command(cmd)
     if err_output:
         print(err_output)
     return output
