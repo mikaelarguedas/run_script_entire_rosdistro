@@ -48,6 +48,7 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     ws_dir = os.path.join(os.sep, 'tmp', 'tmp' + rosdistro + uuid.uuid4().hex[:6].upper())
     repos_file_content = get_repos_list(rosdistro)
     file_path = save_repos_file(repos_file_content, ws_dir, rosdistro)
+    rosinstall_repo_dict = get_repos_in_rosinstall_format(yaml.load(repos_file_content))
     print(file_path)
     print('cloning repositories')
     source_dir = clone_repositories(file_path)
@@ -56,25 +57,36 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
         source_dir, script, package_list, show_diff=False)
 
     # diff on the entire workspace
-    # print_diff(source_dir)
+    print_diff(source_dir)
     print('commiting changes')
     commit_changes(modified_pkgs_dict, commit_message, branch_name)
-    # if False:
-    if True:
-        gh = Github(token)
-        # check for fork existence and create one if necessary
-        print('check for repo access or forks')
-        forks_to_create, repos_to_push_as_is = check_if_fork_needed(
-            gh, modified_repos_list, repos_file_content, pr_message, commit_message, branch_name)
-        print(forks_to_create)
-        print(repos_to_push_as_is)
-        forked_repositories = create_forks(gh, forks_to_create)
-        print(forked_repositories)
-        add_new_remotes(forked_repositories, ws_dir)
-        repos_to_push = copy.copy(repos_to_push_as_is)
-        repos_to_push += [forked_repo for forked_repo in forked_repositories.keys()]
-        print('repositories to push after forking:')
-        print(repos_to_push)
+    gh = Github(token)
+    # check for fork existence and create one if necessary
+    print('check for repo access or forks')
+    forks_to_create, existing_forks, repos_to_push_as_is = check_if_fork_needed(
+        gh, modified_repos_list, rosinstall_repo_dict, pr_message, commit_message, branch_name)
+    print('forks_to_create')
+    print(forks_to_create)
+    print('existing_forks')
+    print(existing_forks)
+    print('repos_to_push_as_is')
+    print(repos_to_push_as_is)
+    newly_forked_repositories = create_forks(gh, forks_to_create, commit)
+    print('newly_forked_repositories')
+    print(newly_forked_repositories)
+    forked_repositories = dict(newly_forked_repositories, **existing_forks)
+    # forked_repositories += [existing_forks[existing_fork] for existing_fork in existing_forks.keys()]
+    print('dict of all forks')
+    print(forked_repositories)
+    remote_name = add_new_remotes(forked_repositories, source_dir)
+    push_changes(
+        branch_name, repos_to_push_as_is, forked_repositories, remote_name, source_dir, commit)
+    repos_to_open_prs_from = copy.copy(repos_to_push_as_is)
+    repos_to_open_prs_from += [
+        forked_repositories[forked_repo] for forked_repo in forked_repositories.keys()]
+    print('repos_to_open_prs_from')
+    print(repos_to_open_prs_from)
+    # open_pull_requests(gh, rosinstall_repo_dict, repos_to_open_prs_from, branch_name, commit)
 
 
 def get_repos_in_rosinstall_format(root):
@@ -111,7 +123,6 @@ def commit_changes(packages_dict, commit_message, branch_name):
             proc = subprocess.Popen(cmd, shell=True, cwd=package_path, stdout=subprocess.PIPE)
             output, stderr_output = proc.communicate()
         output = output.rstrip('\n')
-        # print("'%s'" % output)
         cmd = 'git add . && git commit -m "[%s] %s"' % (
             package_name, commit_message)
         if output != branch_name:
@@ -130,9 +141,7 @@ def commit_changes(packages_dict, commit_message, branch_name):
 
 
 def check_if_fork_needed(
-        gh, repo_dir_list, repos_file_content, pr_message, commit_message, branch_name):
-    root = yaml.load(repos_file_content)
-    repo_dict = get_repos_in_rosinstall_format(root)
+        gh, repo_dir_list, repo_dict, pr_message, commit_message, branch_name):
     gh_repo_dict = {}
     for key, value in repo_dict.items():
         url_paths = []
@@ -157,10 +166,10 @@ def check_if_fork_needed(
     print()
     forks_to_create = []
     repositories_to_push_without_forking = []
+    existing_forks = {}
     skipped_repos = []
     # build list of modified repos
     for repo_path in repo_dir_list:
-        head_repo = ''
         repo = os.path.basename(repo_path)
         # print(gh_repo_dict[repo])
         base_org = gh_repo_dict[repo]['base_org']
@@ -168,14 +177,11 @@ def check_if_fork_needed(
         base_branch = gh_repo_dict[repo]['base_branch']
         repo_full_name = base_org + '/' + base_repo
         ghuser_repos_full_names = [user_repo.full_name for user_repo in ghuser_repos]
+        base_repo_object = gh.get_repo(repo_full_name)
         if repo_full_name in ghuser_repos_full_names:
             print("user '%s' has access to '%s'" % (ghusername, repo_full_name))
-            head_repo = gh.get_repo(repo_full_name)
-            repositories_to_push_without_forking.append(repo_full_name)
+            repositories_to_push_without_forking.append(base_repo_object)
         else:
-            # print("user '%s' does not have access to '%s'\n"
-            #       "Maybe he has access to a fork?\n" % (ghusername, base_org + '/' + base_repo))
-            base_repo_object = gh.get_repo(repo_full_name)
             try:
                 base_repo_object.full_name
             except UnknownObjectException as e:
@@ -183,68 +189,104 @@ def check_if_fork_needed(
                 skipped_repos.append(repo_full_name)
                 continue
             fork_list = base_repo_object.get_forks()
-            # try:
-            #     fork_list = list_forks(base_org, base_repo)
-            #     # if fork_list:
-            #     #     print(len(fork_list))
-            # except GithubException as exc:
-            #     print('Exception happened: %s' % exc)
-            #     pass  # 404 or unauthorized, but unauthorized should have been caught above
             for fork in fork_list:
                 if fork.full_name in ghuser_repos_full_names:
-                    head_repo = fork
                     print("User has access to a fork! '%s'" % fork.full_name)
-                    repositories_to_push_without_forking.append(fork.full_name)
+                    existing_forks[base_repo] = fork
                     break
             else:
                 print("NO FORK FOUND, NEED TO CREATE A FORK OF '%s'\n" % repo_full_name)
                 forks_to_create.append(repo_full_name)
-        # print(head_repo)
     print('repositories to push to: %s\n' % repositories_to_push_without_forking)
     print('forks to create: %s\n' % forks_to_create)
     print('skipped repositories: %s\n' % skipped_repos)
-    return forks_to_create, repositories_to_push_without_forking
+    return forks_to_create, existing_forks, repositories_to_push_without_forking
 
 
-def create_forks(gh, forks_to_create):
+def create_forks(gh, forks_to_create, commit):
     ghuser = gh.get_user()
     forked_repositories = {}
     for fork in forks_to_create:
         repo_to_fork = gh.get_repo(fork)
         cmd = "ghuser.create_fork('%s')" % repo_to_fork
         print("creating fork of: '%s'" % fork)
-        # forked_repo = ghuser.create_fork(repo_to_fork)
-        # forked_repositories.append(forked_repo)
-        # forked_repositories.append(repo_to_fork)
-        # forked_repositories[forked_repo.name] = forked_repo.ssh_url
-        # TODO use forked repo when done testing
-        forked_repositories[repo_to_fork.name] = repo_to_fork.ssh_url
+        # this is only for debugging
+        forked_repositories[repo_to_fork.name] = repo_to_fork
+        if commit:
+            print('Here we will actually fork')
+            # forked_repo = ghuser.create_fork(repo_to_fork)
+            # # TODO use forked repo when done testing
+            # forked_repositories[repo_to_fork.name] = forked_repo
     # returns the list of forked Github.Repository
     return forked_repositories
 
 
-def add_new_remotes(forked_repositories, ws_dir):
-
-    # repo_path_as_list = package_path.split(os.sep)
-    # repo_path = os.sep.join(repo_path_as_list[:5])
-    # 
-    # if repo_path not in repositories_modified
-    remote_name = os.path.basename(ws_dir)
+def add_new_remotes(forked_repositories, source_dir):
+    remote_name = os.path.basename(os.path.dirname(source_dir))
     for repo_basename in forked_repositories.keys():
-        cmd = "git remote add %s %s" % (remote_name, forked_repositories[repo_basename])
-        print("adding new remote for forks: '%s' in '%s'" % (cmd, os.path.join(ws_dir, repo_basename)))
+        cmd = 'git remote add %s %s' % (remote_name, forked_repositories[repo_basename].ssh_url)
+        repo_path = os.path.join(source_dir, repo_basename)
+        print(
+            "adding new remote for forks: '%s' in '%s'" % (
+                cmd, repo_path))
+        if _py3:
+            subprocess.run(
+                cmd, shell=True, cwd=repo_path,
+                stdout=subprocess.PIPE  # , stderr=subprocess.PIPE
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            output, stderr_output = proc.communicate()
+    return remote_name
 
 
-# def push_changes(gh, branch_name, repos_to_push):
-#     for fork in forks_to_create:
-#         cmd = "gh.create_fork('%s')" % fork
-#         print("creating fork calling: '%s'" % cmd)
+def push_changes(branch_name, repos_to_push, forked_repos_to_push, remote_name, source_dir, commit):
+    print('fork_remote_name: %s' % remote_name)
+    print(repos_to_push)
+    for repo in repos_to_push:
+        repo_path = os.path.join(source_dir, repo.name)
+        cmd = 'git push origin %s' % branch_name
+        print("pushing changes:\n invoking '%s' in '%s'" % (
+            cmd, repo_path))
+        if commit:
+            print('Here we will actually push')
+            if _py3:
+                subprocess.run(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
+            else:
+                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+                output, stderr_output = proc.communicate()
+    print(forked_repos_to_push)
+    for repo_basename, repo in forked_repos_to_push.items():
+        repo_path = os.path.join(source_dir, repo_basename)
+        cmd = 'git push %s %s' % (remote_name, branch_name)
+        print("pushing changes:\n invoking '%s' in '%s'" % (
+            cmd, repo_path))
+        if commit:
+            print('Here we will actually push')
+            if _py3:
+                subprocess.run(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
+            else:
+                proc = subprocess.Popen(cmd, cwd=repo_path, shell=True, stdout=subprocess.PIPE)
+                output, stderr_output = proc.communicate()
 
 
-# def open_pull_requests(gh, forks_to_create):
-#     for fork in forks_to_create:
-#         cmd = "gh.create_fork('%s')" % fork
-#         print("creating fork calling: '%s'" % cmd)
+def open_pull_requests(gh, rosinstall_repos_dict, repos_to_open_prs_from, branch_name, commit):
+    for repo in repos_to_open_prs_from:
+        base_branch = rosinstall_repos_dict[repo.name]['version']
+        o = urlparse(rosinstall_repos_dict[repo.name]['url'])
+        url_paths = o.path.split('/')
+        if len(url_paths) < 2:
+            print('url parsing failed', file=sys.stderr)
+            return
+        base_org = url_paths[1]
+        base_repo = url_paths[2][0:url_paths[2].rfind('.')]
+        base_repo_full_name = '/'.join([base_org, base_repo])
+        cmd = "opening PR from repo:'%s' branch:'%s' to repo:'%s' branch :'%s'" % (
+            repo.full_name, branch_name, base_repo_full_name, base_branch)
+        print(cmd)
+        if commit:
+            print('Here we will actually open the PRs')
 
 
 def print_diff(directory):
