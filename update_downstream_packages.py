@@ -43,10 +43,9 @@ def run_command(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
         return result.stdout, result.stderr
     else:
         proc = subprocess.Popen(
-            cmd, shell=shell, cwd=cwd, stdout=stdout, stderr=stderr, universal_newline=True)
+            cmd, shell=shell, cwd=cwd, stdout=stdout, stderr=stderr, universal_newlines=True)
         std_out, error_out = proc.communicate()
         return std_out, error_out
-
 
 
 def main(token, commit, rosdistro, pr_message, commit_message, branch_name, script, package_list):
@@ -253,7 +252,10 @@ def push_changes(branch_name, repos_to_push, forked_repos_to_push, remote_name, 
             output, error_out = run_command(cmd, cwd=repo_path)
 
 
-def open_pull_requests(gh, rosinstall_repos_dict, repos_to_open_prs_from, branch_name, commit):
+def open_pull_requests(
+        gh, rosinstall_repos_dict,
+        repos_to_open_prs_from, branch_name, commit,
+        pr_title, pr_body):
     for repo in repos_to_open_prs_from:
         base_branch = rosinstall_repos_dict[repo.name]['version']
         o = urlparse(rosinstall_repos_dict[repo.name]['url'])
@@ -269,6 +271,16 @@ def open_pull_requests(gh, rosinstall_repos_dict, repos_to_open_prs_from, branch
         print(cmd)
         if commit:
             print('Here we will actually open the PRs')
+            print('running: repo.create_pull("%s", "%s", "%s", "%s", True)' % (
+                pr_title, pr_body, base_branch, repo.name))
+            # TODO confirm if this should be called on base repo or head repo
+            # also conver full name on head_org:head_branch
+            # repo.create_pull(
+            #     title=pr_title,
+            #     body=pr_body,
+            #     base=base_branch,
+            #     head=repo.full_name,
+            #     maintainer_can_modify=True)
 
 
 def print_diff(directory):
@@ -358,8 +370,9 @@ def save_repos_file(repos_file_content, ws_dir, rosdistro):
 
 def get_repos_list(rosdistro):
     # cmd = 'rosinstall_generator ALL --rosdistro %s --deps --upstream-development' % rosdistro
-    cmd = 'rosinstall_generator moveit --rosdistro %s --deps --upstream-development' % rosdistro
-    # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
+    # cmd = 'rosinstall_generator moveit --rosdistro %s --deps --upstream-development' % rosdistro
+    cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
+    # cmd = 'rosinstall_generator rviz --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
     output, err_output = run_command(cmd)
     if err_output:
