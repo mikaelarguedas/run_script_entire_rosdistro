@@ -94,12 +94,16 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     remote_name = add_new_remotes(forked_repositories, source_dir)
     push_changes(
         branch_name, repos_to_push_as_is, forked_repositories, remote_name, source_dir, commit)
+    repos_to_open_prs_to = copy.copy(repos_to_push_as_is)
     repos_to_open_prs_from = copy.copy(repos_to_push_as_is)
     repos_to_open_prs_from += [
         forked_repositories[forked_repo] for forked_repo in forked_repositories.keys()]
     print('repos_to_open_prs_from')
     print(repos_to_open_prs_from)
-    # open_pull_requests(gh, rosinstall_repo_dict, repos_to_open_prs_from, branch_name, commit)
+    print('repos_to_open_prs_to')
+    print(repos_to_open_prs_to)
+    opened_prs = open_pull_requests(gh, rosinstall_repo_dict, repos_to_open_prs_from, branch_name, commit, commit_message, pr_message)
+    print('\nList of opened PRs:\n%s' % opened_prs)
 
 
 def get_repos_in_rosinstall_format(root):
@@ -209,6 +213,7 @@ def create_forks(gh, forks_to_create, commit):
         print("creating fork of: '%s'" % fork)
         # this is only for debugging
         forked_repositories[repo_to_fork.name] = repo_to_fork
+        # repos_to_fork[repos_to_fork.name] repos_to_fork
         if commit:
             print('Here we will actually fork')
             # forked_repo = ghuser.create_fork(repo_to_fork)
@@ -256,6 +261,7 @@ def open_pull_requests(
         gh, rosinstall_repos_dict,
         repos_to_open_prs_from, branch_name, commit,
         pr_title, pr_body):
+    opened_prs = []
     for repo in repos_to_open_prs_from:
         base_branch = rosinstall_repos_dict[repo.name]['version']
         o = urlparse(rosinstall_repos_dict[repo.name]['url'])
@@ -269,10 +275,34 @@ def open_pull_requests(
         cmd = "opening PR from repo:'%s' branch:'%s' to repo:'%s' branch :'%s'" % (
             repo.full_name, branch_name, base_repo_full_name, base_branch)
         print(cmd)
+        head = repo.full_name.split('/')[0] + ':' + branch_name
+        print(
+            '(dry-run) running: repo.create_pull(\n'
+            "title='%s',\nbody:'%s',\nbase:'%s',\nhead:'%s', True)" % (
+                pr_title, pr_body, base_branch, head)
+        )
         if commit:
             print('Here we will actually open the PRs')
-            print('running: repo.create_pull("%s", "%s", "%s", "%s", True)' % (
-                pr_title, pr_body, base_branch, repo.name))
+            # pr = repo.create_pull(
+            #     title=pr_title,
+            #     body=pr_body,
+            #     base=base_branch,
+            #     head=head,
+            #     maintainer_can_modify=True
+            # )
+            pr = repo.create_pull(
+                pr_title,
+                pr_body,
+                base_branch,
+                head,
+                True
+            )
+            opened_prs.append(pr)
+            print(pr.html_url)
+            # print(
+            #     'running: repo.create_pull(\n'
+            #     'title:%s, body:%s, base:%s, head:%s, True)' % (
+            #     pr_title, pr_body, base_branch, repo.full_name.split('/')[0] + ':' + branch_name))
             # TODO confirm if this should be called on base repo or head repo
             # also conver full name on head_org:head_branch
             # repo.create_pull(
@@ -281,6 +311,7 @@ def open_pull_requests(
             #     base=base_branch,
             #     head=repo.full_name,
             #     maintainer_can_modify=True)
+    return opened_prs
 
 
 def print_diff(directory):
@@ -389,7 +420,7 @@ if __name__ == '__main__':
         '-r', '--rosdistro',
         type=str,
         required=True,
-        choices=['indigo', 'kinetic', 'lunar'],
+        choices=['indigo', 'kinetic', 'lunar', 'melodic'],
         help='ROS distribution to update',)
     argparser.add_argument(
         '-b', '--branch-name',
@@ -405,7 +436,7 @@ if __name__ == '__main__':
         '--commit-message',
         type=str,
         required=True,
-        help='test used for the commit message',)
+        help='text used for the commit message, this will also be used a the PR title',)
     argparser.add_argument(
         '--script',
         type=str,
