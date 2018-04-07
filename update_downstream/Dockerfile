@@ -19,7 +19,7 @@ RUN apt-get -qq update && \
 RUN apt-get -qq update && apt-get install -y \
     build-essential \
     git \
-    python-github \
+    python-pip \
     python-rosdep \
     python-rosinstall \
     python-rosinstall-generator \
@@ -33,10 +33,15 @@ RUN apt-get -qq update && apt-get install -y \
 RUN apt-get -qq update && \
     apt-get install -y ros-kinetic-ros-core
 
+RUN pip install pygithub
+
 WORKDIR /root/
 
-RUN wget https://raw.githubusercontent.com/ros/class_loader/indigo-devel/scripts/class_loader_headers_update.py
-RUN wget https://raw.githubusercontent.com/ros/pluginlib/kinetic-devel/scripts/pluginlib_headers_migration.py
+RUN wget https://raw.githubusercontent.com/ros/class_loader/indigo-devel/scripts/class_loader_headers_update.py && \
+    chmod +x class_loader_headers_update.py
+RUN wget https://raw.githubusercontent.com/ros/pluginlib/kinetic-devel/scripts/pluginlib_headers_migration.py && \
+    chmod +x pluginlib_headers_migration.py
+
 RUN wget https://raw.githubusercontent.com/mikaelarguedas/run_script_entire_rosdistro/master/update_downstream_packages.py
 RUN rosdep init && rosdep update
 

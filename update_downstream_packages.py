@@ -26,9 +26,6 @@ else:
 # TODO Error handling: raise on Fatal, skip on minor errors
 # TODO Bail out for non git repos and repot the list
 # TODO Bail out of non github repos
-# TODO create fork if needed
-# TODO push changes to upstream repo (or fork)
-# TODO open PRs
 # TODO provide options to skip parts of the process
 # TODO add verbose mode
 # TODO bail out if branch / PR already exists
@@ -77,7 +74,7 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     gh = Github(token)
     # check for fork existence and create one if necessary
     print('check for repo access or forks')
-    forks_to_create, existing_forks, repos_to_push_as_is = check_if_fork_needed(
+    forks_to_create, existing_forks, repos_to_push_as_is, base_repos_to_pr = check_if_fork_needed(
         gh, modified_repos_list, rosinstall_repo_dict, pr_message, commit_message, branch_name)
     print('forks_to_create')
     print(forks_to_create)
@@ -94,14 +91,16 @@ def main(token, commit, rosdistro, pr_message, commit_message, branch_name, scri
     remote_name = add_new_remotes(forked_repositories, source_dir)
     push_changes(
         branch_name, repos_to_push_as_is, forked_repositories, remote_name, source_dir, commit)
-    repos_to_open_prs_to = copy.copy(repos_to_push_as_is)
+    # repos_to_open_prs_to = copy.copy(repos_to_push_as_is)
     repos_to_open_prs_from = copy.copy(repos_to_push_as_is)
     repos_to_open_prs_from += [
         forked_repositories[forked_repo] for forked_repo in forked_repositories.keys()]
+    # repos_to_open_prs_from += [
+    #     forked_repositories[forked_repo] for forked_repo in forked_repositories.keys()]
     print('repos_to_open_prs_from')
     print(repos_to_open_prs_from)
-    print('repos_to_open_prs_to')
-    print(repos_to_open_prs_to)
+    # print('repos_to_open_prs_to')
+    # print(repos_to_open_prs_to)
     opened_prs = open_pull_requests(gh, rosinstall_repo_dict, repos_to_open_prs_from, branch_name, commit, commit_message, pr_message)
     print('\nList of opened PRs:\n%s' % opened_prs)
 
@@ -144,6 +143,7 @@ def commit_changes(packages_dict, commit_message, branch_name):
 def check_if_fork_needed(
         gh, repo_dir_list, repo_dict, pr_message, commit_message, branch_name):
     gh_repo_dict = {}
+    base_repos_to_pr = []
     for key, value in repo_dict.items():
         url_paths = []
         o = urlparse(value['url'])
@@ -198,10 +198,11 @@ def check_if_fork_needed(
             else:
                 print("NO FORK FOUND, NEED TO CREATE A FORK OF '%s'\n" % repo_full_name)
                 forks_to_create.append(repo_full_name)
+        base_repos_to_pr.append(repo_full_name)
     print('repositories to push to: %s\n' % repositories_to_push_without_forking)
     print('forks to create: %s\n' % forks_to_create)
     print('skipped repositories: %s\n' % skipped_repos)
-    return forks_to_create, existing_forks, repositories_to_push_without_forking
+    return forks_to_create, existing_forks, repositories_to_push_without_forking, base_repos_to_pr
 
 
 def create_forks(gh, forks_to_create, commit):
@@ -212,13 +213,13 @@ def create_forks(gh, forks_to_create, commit):
         cmd = "ghuser.create_fork('%s')" % repo_to_fork
         print("creating fork of: '%s'" % fork)
         # this is only for debugging
-        forked_repositories[repo_to_fork.name] = repo_to_fork
+        # forked_repositories[repo_to_fork.name] = repo_to_fork
         # repos_to_fork[repos_to_fork.name] repos_to_fork
         if commit:
             print('Here we will actually fork')
-            # forked_repo = ghuser.create_fork(repo_to_fork)
+            forked_repo = ghuser.create_fork(repo_to_fork)
             # # TODO use forked repo when done testing
-            # forked_repositories[repo_to_fork.name] = forked_repo
+            forked_repositories[repo_to_fork.name] = forked_repo
     # returns the list of forked Github.Repository
     return forked_repositories
 
@@ -255,6 +256,8 @@ def push_changes(branch_name, repos_to_push, forked_repos_to_push, remote_name, 
         if commit:
             print('Here we will actually push')
             output, error_out = run_command(cmd, cwd=repo_path)
+            if error_out:
+                print(error_out, file=sys.stderr)
 
 
 def open_pull_requests(
@@ -276,11 +279,8 @@ def open_pull_requests(
             repo.full_name, branch_name, base_repo_full_name, base_branch)
         print(cmd)
         head = repo.full_name.split('/')[0] + ':' + branch_name
-        print(
-            '(dry-run) running: repo.create_pull(\n'
-            "title='%s',\nbody:'%s',\nbase:'%s',\nhead:'%s', True)" % (
-                pr_title, pr_body, base_branch, head)
-        )
+        base_repo = gh.get_repo(base_repo_full_name)
+        print('base_repo_full_name:' + base_repo_full_name)
         if commit:
             print('Here we will actually open the PRs')
             # pr = repo.create_pull(
@@ -290,15 +290,26 @@ def open_pull_requests(
             #     head=head,
             #     maintainer_can_modify=True
             # )
-            pr = repo.create_pull(
-                pr_title,
-                pr_body,
-                base_branch,
-                head,
-                True
+            try:
+                base_repo = gh.get_repo(base_repo_full_name)
+                pr = base_repo.create_pull(
+                    pr_title,
+                    pr_body,
+                    base_branch,
+                    head,
+                    True
+                )
+                opened_prs.append(pr.html_url)
+                print(pr.html_url)
+            except GithubException as e:
+                print(e, file=sys.stderr)
+                pass
+        else:
+            print(
+                '(dry-run) running: repo.create_pull(\n'
+                "title='%s',\nbody:'%s',\nbase:'%s',\nhead:'%s', True)" % (
+                    pr_title, pr_body, base_branch, head)
             )
-            opened_prs.append(pr)
-            print(pr.html_url)
             # print(
             #     'running: repo.create_pull(\n'
             #     'title:%s, body:%s, base:%s, head:%s, True)' % (
@@ -400,9 +411,9 @@ def save_repos_file(repos_file_content, ws_dir, rosdistro):
 
 
 def get_repos_list(rosdistro):
-    # cmd = 'rosinstall_generator ALL --rosdistro %s --deps --upstream-development' % rosdistro
+    cmd = 'rosinstall_generator ALL --rosdistro %s --deps --upstream-development' % rosdistro
     # cmd = 'rosinstall_generator moveit --rosdistro %s --deps --upstream-development' % rosdistro
-    cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
+    # cmd = 'rosinstall_generator ros_base --rosdistro %s --deps --upstream-development' % rosdistro
     # cmd = 'rosinstall_generator rviz --rosdistro %s --deps --upstream-development' % rosdistro
     print('invoking: ' + cmd)
     output, err_output = run_command(cmd)
